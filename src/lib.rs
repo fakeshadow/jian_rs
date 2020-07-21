@@ -25,7 +25,6 @@
 //! let _ = pool.execute(|| {
 //!     println!("some code");
 //! });
-//!
 //! ```
 //!
 //! # Features
