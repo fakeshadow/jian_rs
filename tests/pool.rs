@@ -1,6 +1,12 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+#[cfg(feature = "with-async")]
+use {
+    core::sync::atomic::AtomicUsize,
+    futures::stream::{FuturesUnordered, StreamExt},
+};
+
 use std::sync::Arc;
 use std::thread;
 
@@ -25,10 +31,6 @@ fn init() {
 #[cfg(feature = "with-async")]
 #[actix_rt::test]
 async fn async_work() {
-    use core::sync::atomic::AtomicUsize;
-
-    use futures::stream::{FuturesUnordered, StreamExt};
-
     let pool = ThreadPool::builder()
         .max_threads(12)
         .min_threads(1)
@@ -87,6 +89,36 @@ async fn async_work() {
     assert_eq!(12, state.active_threads);
 }
 
+#[cfg(feature = "with-async")]
+#[actix_rt::test]
+async fn async_sequential() {
+    let pool = ThreadPool::builder()
+        .max_threads(12)
+        .min_threads(1)
+        .thread_name("test-pool")
+        .build();
+
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    for _ in 0..1024 {
+        let counter = counter.clone();
+        let _ = pool
+            .execute_async(move || {
+                std::thread::sleep(Duration::from_millis(1));
+                counter.fetch_add(1, Ordering::Release);
+                1u8
+            })
+            .await;
+    }
+
+    assert_eq!(1024, counter.load(Ordering::Acquire));
+
+    let state = pool.state();
+
+    // chained async/await are sequential so we remain on one thread.
+    assert_eq!(1, state.active_threads);
+}
+
 #[test]
 fn recycle() {
     let pool = ThreadPool::builder()
@@ -139,6 +171,7 @@ fn close() {
     let executed = Arc::new(AtomicBool::new(false));
 
     let executed_clone = executed.clone();
+
     let res = pool.execute(move || {
         executed_clone.store(true, Ordering::SeqCst);
     });

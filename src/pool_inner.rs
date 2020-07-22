@@ -23,7 +23,7 @@ pub(crate) struct ThreadPoolInner {
     // A state where 0 means there is no parked thread and 1 as opposite
     have_park: CachePadded<AtomicUsize>,
 
-    // A counter indicate how many workers are in queue.
+    // A counter indicate how many works are in queue.
     work_count: CachePadded<AtomicUsize>,
 
     stack_size: Option<usize>,
@@ -112,7 +112,7 @@ impl ThreadPoolInner {
         }
     }
 
-    // return if we should spawn new with this decrement.
+    // return true if we should spawn new with this decrement.
     pub(crate) fn dec_thread_count(&self) -> bool {
         let count = self.active_threads.fetch_sub(1, Ordering::AcqRel);
 
@@ -120,15 +120,15 @@ impl ThreadPoolInner {
     }
 
     pub(crate) fn inc_work_count(&self) -> usize {
-        self.work_count.fetch_add(1, Ordering::Acquire)
+        self.work_count.fetch_add(1, Ordering::Relaxed)
     }
 
     fn dec_work_count(&self) {
-        self.work_count.fetch_sub(1, Ordering::Release);
+        self.work_count.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub(crate) fn have_park(&self) {
-        self.have_park.fetch_or(1, Ordering::Acquire);
+        self.have_park.fetch_or(1, Ordering::Release);
     }
 
     pub(crate) fn thread_count(&self) -> (usize, usize) {

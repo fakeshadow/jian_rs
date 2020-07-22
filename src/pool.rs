@@ -33,14 +33,11 @@ impl ThreadPool {
         // push job to queue.
         inner.push(Box::new(job))?;
 
-        // increment work count
         if inner.inc_work_count() > 0 {
-            // if the count is larger than 0 try to spawn new thread first.
-            if !self.spawn_thread() {
-                // otherwise try to unpark a thread.
-                inner.try_unpark_one();
-            };
+            self.spawn_thread();
         }
+
+        inner.try_unpark_one();
 
         Ok(())
     }
