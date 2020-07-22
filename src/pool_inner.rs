@@ -119,6 +119,11 @@ impl ThreadPoolInner {
         ((count - 1) < self.min_threads) && !self.jobs.is_closed()
     }
 
+    // return true if we are able to drop the worker without going below min_idle.
+    pub(crate) fn can_drop_idle(&self) -> bool {
+        self.active_threads.load(Ordering::Relaxed) > self.min_threads
+    }
+
     pub(crate) fn inc_work_count(&self) -> usize {
         self.work_count.fetch_add(1, Ordering::Relaxed)
     }

@@ -179,7 +179,12 @@ impl Worker {
                                     job();
                                     // We got job again so continue the loop.
                                 }
-                                Err(_) => break,
+                                Err(_) => {
+                                    // check if we are about to go below min_idle
+                                    if inner.can_drop_idle() {
+                                        break;
+                                    }
+                                },
                             }
                         }
                     }
