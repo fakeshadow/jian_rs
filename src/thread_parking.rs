@@ -77,22 +77,8 @@ impl ThreadParker {
     }
 }
 
+#[derive(Eq, PartialEq)]
 enum ParkerState {
     PARKING,
     UNPARKING,
-}
-
-impl PartialEq for ParkerState {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            ParkerState::PARKING => match other {
-                ParkerState::PARKING => true,
-                ParkerState::UNPARKING => false,
-            },
-            ParkerState::UNPARKING => match other {
-                ParkerState::PARKING => false,
-                ParkerState::UNPARKING => true,
-            },
-        }
-    }
 }

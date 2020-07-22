@@ -20,7 +20,10 @@ pub(crate) struct ThreadPoolInner {
     // Current active threads count.
     active_threads: CachePadded<AtomicUsize>,
 
-    // A counter indicate how many work we have currently.
+    // A state where 0 means there is no parked thread and 1 as opposite
+    have_park: CachePadded<AtomicUsize>,
+
+    // A counter indicate how many workers are in queue.
     work_count: CachePadded<AtomicUsize>,
 
     stack_size: Option<usize>,
@@ -41,6 +44,7 @@ impl From<Builder> for ThreadPoolInner {
             jobs: ConcurrentQueue::unbounded(),
             unparker: Mutex::new(Vec::with_capacity(max_threads)),
             active_threads: CachePadded::new(AtomicUsize::new(0)),
+            have_park: CachePadded::new(AtomicUsize::new(0)),
             work_count: CachePadded::new(AtomicUsize::new(0)),
             stack_size: builder.thread_stack_size,
             park_timeout: builder.idle_timeout,
@@ -77,7 +81,10 @@ impl ThreadPoolInner {
     }
 
     pub(crate) fn pop(&self) -> Result<Job, PopError> {
-        self.jobs.pop()
+        self.jobs.pop().map(|job| {
+            self.dec_work_count();
+            job
+        })
     }
 
     pub(crate) fn close(&self) -> bool {
@@ -116,8 +123,12 @@ impl ThreadPoolInner {
         self.work_count.fetch_add(1, Ordering::Acquire)
     }
 
-    pub(crate) fn dec_work_count(&self) {
+    fn dec_work_count(&self) {
         self.work_count.fetch_sub(1, Ordering::Release);
+    }
+
+    pub(crate) fn have_park(&self) {
+        self.have_park.fetch_or(1, Ordering::Acquire);
     }
 
     pub(crate) fn thread_count(&self) -> (usize, usize) {
@@ -155,6 +166,12 @@ impl ThreadPoolInner {
         false
     }
 
+    pub(crate) fn try_unpark_one(&self) {
+        if self.have_park.load(Ordering::Acquire) != 0 {
+            self.unpark_one();
+        }
+    }
+
     pub(crate) fn unpark_one(&self) {
         let mut guard = self.unparker.lock();
 
@@ -163,6 +180,9 @@ impl ThreadPoolInner {
                 return;
             }
         }
+
+        // We have no parker in parking state.
+        self.have_park.store(0, Ordering::Release);
     }
 
     pub(crate) fn unpark_all(&self) {
@@ -171,5 +191,7 @@ impl ThreadPoolInner {
         for unparker in guard.iter_mut() {
             unparker.try_unpark();
         }
+
+        self.have_park.store(0, Ordering::Release);
     }
 }

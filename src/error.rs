@@ -2,22 +2,56 @@ use core::fmt::{Debug, Display, Formatter, Result};
 
 use concurrent_queue::PushError;
 
+use crate::pool_inner::Job;
+
 /// An enum exposed pool internal error to public.
-pub enum ThreadPoolError<T> {
+pub enum ThreadPoolError {
     Canceled,
-    Closed(T),
-    Full(T),
+    Closed(Job),
+    Full(Job),
+}
+
+impl ThreadPoolError {
+    /// Try to extract the original job from error.
+    ///
+    /// The `job` is a function trait object.
+    ///
+    /// # Example:
+    /// ```rust
+    /// let pool = jian_rs::ThreadPool::builder().build();
+    ///
+    /// // close the pool
+    /// pool.close();
+    ///
+    /// // try to add new job.
+    /// let result = pool.execute(||{ println!("some code"); });
+    ///
+    /// // job is failed with error.
+    /// if let Err(e) = result {
+    ///     // extract the job
+    ///     let job = e.into_inner().unwrap();
+    ///     // run the job manually
+    ///     job();
+    /// }
+    /// ```
+    pub fn into_inner(self) -> Option<Box<dyn FnOnce() + Send + 'static>> {
+        match self {
+            ThreadPoolError::Closed(job) => Some(job),
+            ThreadPoolError::Full(job) => Some(job),
+            ThreadPoolError::Canceled => None,
+        }
+    }
 }
 
 #[cfg(feature = "with-async")]
-impl<T> From<futures_channel::oneshot::Canceled> for ThreadPoolError<T> {
+impl From<futures_channel::oneshot::Canceled> for ThreadPoolError {
     fn from(_e: futures_channel::oneshot::Canceled) -> Self {
         ThreadPoolError::Canceled
     }
 }
 
-impl<T> From<PushError<T>> for ThreadPoolError<T> {
-    fn from(e: PushError<T>) -> Self {
+impl From<PushError<Job>> for ThreadPoolError {
+    fn from(e: PushError<Job>) -> Self {
         match e {
             PushError::Closed(t) => ThreadPoolError::Closed(t),
             PushError::Full(t) => ThreadPoolError::Full(t),
@@ -25,9 +59,9 @@ impl<T> From<PushError<T>> for ThreadPoolError<T> {
     }
 }
 
-impl<T> std::error::Error for ThreadPoolError<T> {}
+impl std::error::Error for ThreadPoolError {}
 
-impl<T> Debug for ThreadPoolError<T> {
+impl Debug for ThreadPoolError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         let mut fmt = f.debug_struct("ThreadPoolError");
 
@@ -47,7 +81,7 @@ impl<T> Debug for ThreadPoolError<T> {
     }
 }
 
-impl<T> Display for ThreadPoolError<T> {
+impl Display for ThreadPoolError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Display::fmt(&self, f)
     }

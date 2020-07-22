@@ -17,12 +17,11 @@
 //! ```rust
 //! use core::time::Duration;
 //!
-//! use jian_rs::ThreadPool;
-//!
+//! use jian_rs::{ThreadPool, ThreadPoolError};
 //!
 //! let pool = ThreadPool::builder().build();
 //!
-//! let _ = pool.execute(|| {
+//! let result: Result<(), ThreadPoolError> = pool.execute(|| {
 //!     println!("some code");
 //! });
 //! ```

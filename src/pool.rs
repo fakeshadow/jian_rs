@@ -6,7 +6,7 @@ use std::thread;
 use concurrent_queue::PopError;
 
 use crate::builder::Builder;
-use crate::pool_inner::{Job, ThreadPoolInner};
+use crate::pool_inner::ThreadPoolInner;
 use crate::thread_parking::ThreadParker;
 use crate::ThreadPoolError;
 
@@ -24,7 +24,7 @@ impl ThreadPool {
     }
 
     /// Executes the function `job` on a thread in the pool.
-    pub fn execute<F>(&self, job: F) -> Result<(), ThreadPoolError<Job>>
+    pub fn execute<F>(&self, job: F) -> Result<(), ThreadPoolError>
     where
         F: FnOnce() + Send + 'static,
     {
@@ -33,12 +33,12 @@ impl ThreadPool {
         // push job to queue.
         inner.push(Box::new(job))?;
 
-        // if we have unsolved work other than the one we just added.
+        // increment work count
         if inner.inc_work_count() > 0 {
-            // try to spawn new thread first.
+            // if the count is larger than 0 try to spawn new thread first.
             if !self.spawn_thread() {
                 // otherwise try to unpark a thread.
-                inner.unpark_one();
+                inner.try_unpark_one();
             };
         }
 
@@ -47,26 +47,23 @@ impl ThreadPool {
 
     /// execute the function `job` asynchronously.
     ///
-    /// Return an `Option<R>` where R is the job function's return type. When `None` return it
-    /// means the job is canceled.
-    ///
     /// [`futures_channel::oneshot::channel`]is used to await on the result.
     ///
-    /// [`futures_channel::oneshot::channel`]: https://docs.rs/futures-channel/0.3.5/futures_channel/oneshot/index.html
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    /// [futures_channel::oneshot::channel]: https://docs.rs/futures-channel/0.3.5/futures_channel/oneshot/index.html
     #[cfg(feature = "with-async")]
-    pub async fn execute_async<F, R>(&self, job: F) -> Result<R, ThreadPoolError<Job>>
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub async fn execute_async<F, R>(&self, job: F) -> Result<R, ThreadPoolError>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
         let (tx, rx) = futures_channel::oneshot::channel();
 
-        let _ = self.execute(Box::new(move || {
+        self.execute(Box::new(move || {
             if !tx.is_canceled() {
                 let _ = tx.send(job());
             }
-        }));
+        }))?;
 
         Ok(rx.await?)
     }
@@ -162,7 +159,6 @@ impl Worker {
         loop {
             match inner.pop() {
                 Ok(job) => {
-                    inner.dec_work_count();
                     job();
                 }
                 Err(e) => match e {
@@ -175,13 +171,16 @@ impl Worker {
                             break;
                         };
 
+                        inner.have_park();
+
+                        // park and wait for notify or timeout
                         if parker.park_timeout() {
                             // We are unparking because of timeout. try to pop job one more time and
                             // exit on error
                             match inner.pop() {
                                 Ok(job) => {
-                                    inner.dec_work_count();
                                     job();
+                                    // We got job again so continue the loop.
                                 }
                                 Err(_) => break,
                             }
@@ -196,6 +195,8 @@ impl Worker {
 impl From<ThreadPool> for Worker {
     fn from(pool: ThreadPool) -> Self {
         let inner = &*pool.inner;
+
+        // It's important we construct worker in newly spawned thread.
         let parker = inner.new_parking(inner.park_timeout());
 
         Worker { pool, parker }

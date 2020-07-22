@@ -1,5 +1,7 @@
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+use std::sync::Arc;
 use std::thread;
 
 use jian_rs::ThreadPool;
@@ -23,9 +25,7 @@ fn init() {
 #[cfg(feature = "with-async")]
 #[actix_rt::test]
 async fn async_work() {
-    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    use std::sync::Arc;
+    use core::sync::atomic::AtomicUsize;
 
     use futures::stream::{FuturesUnordered, StreamExt};
 
@@ -135,6 +135,24 @@ fn close() {
 
     let state = pool.state();
     assert_eq!(0, state.active_threads);
+
+    let executed = Arc::new(AtomicBool::new(false));
+
+    let executed_clone = executed.clone();
+    let res = pool.execute(move || {
+        executed_clone.store(true, Ordering::SeqCst);
+    });
+
+    assert_eq!(false, executed.load(Ordering::SeqCst));
+
+    // job would return in error if the pool is closed.
+    if let Err(e) = res {
+        let job = e.into_inner().unwrap();
+
+        job();
+    }
+
+    assert_eq!(true, executed.load(Ordering::SeqCst));
 }
 
 #[test]
@@ -146,12 +164,12 @@ fn panic_recover() {
         .build();
 
     let _ = pool.execute(|| {
-        panic!("destroy");
+        panic!("This is a on purpose panic for testing panic recovery");
     });
 
     thread::sleep(Duration::from_millis(100));
 
-    // we spawn new thread when a panic happen(only when we are going below min_threads)
+    // we spawn new thread when a panic happen(if we are going below min_threads)
     let state = pool.state();
     assert_eq!(3, state.active_threads);
 
@@ -162,7 +180,7 @@ fn panic_recover() {
     });
 
     let _ = pool.execute(|| {
-        panic!("destroy");
+        panic!("This is a on purpose panic for testing panic recovery");
     });
 
     thread::sleep(Duration::from_millis(100));
