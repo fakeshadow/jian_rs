@@ -4,7 +4,7 @@ use crate::pool::ThreadPool;
 
 #[derive(Clone)]
 pub struct Builder {
-    pub(crate) min_threads: Option<usize>,
+    pub(crate) min_threads: usize,
     pub(crate) max_threads: Option<usize>,
     pub(crate) thread_name: Option<String>,
     pub(crate) thread_stack_size: Option<usize>,
@@ -14,7 +14,7 @@ pub struct Builder {
 impl Default for Builder {
     fn default() -> Self {
         Self {
-            min_threads: None,
+            min_threads: 1,
             max_threads: None,
             thread_name: None,
             thread_stack_size: None,
@@ -29,16 +29,22 @@ impl Builder {
     ///
     /// # Panics
     ///
-    /// This method will panic if `num_threads` is 0.
+    /// This method will panic if `max_threads` is 0.
     pub fn max_threads(mut self, num: usize) -> Builder {
         assert!(num > 0);
         self.max_threads = Some(num);
         self
     }
 
+    /// Set the minimal number of worker-threads that will be alive at any given moment by the built
+    /// [`ThreadPool`]. If not specified, defaults the number of threads to the number of 1.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `min_threads` is 0.
     pub fn min_threads(mut self, num: usize) -> Builder {
         assert!(num > 0);
-        self.min_threads = Some(num);
+        self.min_threads = num;
         self
     }
 

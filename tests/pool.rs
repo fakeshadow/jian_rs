@@ -231,9 +231,6 @@ fn no_eager_spawn() {
         .thread_name("test-pool")
         .build();
 
-    let state = pool.state();
-    assert_eq!(0, state.active_threads);
-
     let _a = pool.execute(|| {
         thread::sleep(Duration::from_millis(1));
     });

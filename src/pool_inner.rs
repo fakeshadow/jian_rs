@@ -48,7 +48,7 @@ impl From<Builder> for ThreadPoolInner {
             work_count: CachePadded::new(AtomicUsize::new(0)),
             stack_size: builder.thread_stack_size,
             park_timeout: builder.idle_timeout,
-            min_threads: builder.min_threads.unwrap_or(0),
+            min_threads: builder.min_threads,
             max_threads,
         }
     }
