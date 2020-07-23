@@ -34,10 +34,10 @@ impl ThreadPool {
         inner.push(Box::new(job))?;
 
         if inner.inc_work_count() > 0 {
-            self.spawn_thread();
+            if !self.spawn_thread() {
+                inner.try_unpark_one();
+            };
         }
-
-        inner.try_unpark_one();
 
         Ok(())
     }
@@ -57,9 +57,8 @@ impl ThreadPool {
         let (tx, rx) = futures_channel::oneshot::channel();
 
         self.execute(Box::new(move || {
-            if !tx.is_canceled() {
                 let _ = tx.send(job());
-            }
+
         }))?;
 
         Ok(rx.await?)
@@ -83,15 +82,6 @@ impl ThreadPool {
             name,
             active_threads,
             max_threads,
-        }
-    }
-}
-
-impl Drop for ThreadPool {
-    fn drop(&mut self) {
-        while let Ok(job) = self.inner.pop() {
-            // ToDo: for now if we panic then the drop would be interrupted
-            job();
         }
     }
 }
@@ -196,10 +186,8 @@ impl Worker {
 
 impl From<ThreadPool> for Worker {
     fn from(pool: ThreadPool) -> Self {
-        let inner = &*pool.inner;
-
         // It's important we construct worker in newly spawned thread.
-        let parker = inner.new_parking(inner.park_timeout());
+        let parker = pool.inner.new_parking();
 
         Worker { pool, parker }
     }

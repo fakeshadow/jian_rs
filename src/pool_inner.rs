@@ -69,10 +69,6 @@ impl ThreadPoolInner {
         self.stack_size
     }
 
-    pub(crate) fn park_timeout(&self) -> Duration {
-        self.park_timeout
-    }
-
     pub(crate) fn push<F>(&self, job: F) -> Result<(), PushError<Job>>
     where
         F: FnOnce() + Send + 'static,
@@ -142,8 +138,8 @@ impl ThreadPoolInner {
         (active, self.max_threads)
     }
 
-    pub(crate) fn new_parking(&self, dur: Duration) -> ThreadParker {
-        let (u, p) = crate::thread_parking::pair(dur);
+    pub(crate) fn new_parking(&self) -> ThreadParker {
+        let (u, p) = crate::thread_parking::pair(self.park_timeout);
         self.unparker.lock().push(u);
         p
     }
