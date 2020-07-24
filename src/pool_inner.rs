@@ -12,19 +12,23 @@ pub(crate) struct ThreadPoolInner {
     name: Option<String>,
 
     // a MPMC queue for storing jobs.
-    jobs: ConcurrentQueue<Box<dyn FnOnce() + Send + 'static>>,
+    jobs: ConcurrentQueue<Job>,
 
     // a lock for spawned threads and the unparker of them for wake up and unblock them.
     unparker: Mutex<Vec<ThreadUnparker>>,
 
-    // Current active threads count.
-    active_threads: CachePadded<AtomicUsize>,
+    // 3 counters packed in one usize. With the following bit flag:
+    // { work: 0, have_park: 0, active_threads: 0 }
+    // active_threads would be in a range from 0 - max_threads.
+    // have_park would be either 0 (no thread is parking) or 1(at least one thread is parking)
+    // work_count would start from 0 and inc/dec with the jobs queue's push/pop
+    counter: CachePadded<AtomicUsize>,
 
-    // A state where 0 means there is no parked thread and 1 as opposite
-    have_park: CachePadded<AtomicUsize>,
+    // bitwise marker for have_park.
+    park_marker: usize,
 
-    // A counter indicate how many works are in queue.
-    work_count: CachePadded<AtomicUsize>,
+    // work unit.
+    one_work: usize,
 
     stack_size: Option<usize>,
 
@@ -39,13 +43,25 @@ impl From<Builder> for ThreadPoolInner {
     fn from(builder: Builder) -> Self {
         let max_threads = builder.max_threads.unwrap_or_else(num_cpus::get);
 
+        assert!(
+            max_threads < (core::usize::MAX >> 1) / 2,
+            "Too many threads"
+        );
+
+        // leave the last bit for have_park.
+        // marker is used for bitwise operation for work and active_threads
+        let park_marker = (max_threads + 1).next_power_of_two();
+
+        // compute one_work unit and shift.
+        let one_work = park_marker * 2;
+
         ThreadPoolInner {
             name: builder.thread_name,
             jobs: ConcurrentQueue::unbounded(),
             unparker: Mutex::new(Vec::with_capacity(max_threads)),
-            active_threads: CachePadded::new(AtomicUsize::new(0)),
-            have_park: CachePadded::new(AtomicUsize::new(0)),
-            work_count: CachePadded::new(AtomicUsize::new(0)),
+            counter: CachePadded::new(AtomicUsize::new(0)),
+            park_marker,
+            one_work,
             stack_size: builder.thread_stack_size,
             park_timeout: builder.idle_timeout,
             min_threads: builder.min_threads,
@@ -88,54 +104,70 @@ impl ThreadPoolInner {
     }
 
     // increment thread count and return false if we already hit max pool size.
-    pub(crate) fn inc_thread_count(&self) -> bool {
-        let mut active = self.active_threads.load(Ordering::Relaxed);
+    pub(crate) fn inc_active_thread(&self) -> bool {
+        let mut counter = self.counter.load(Ordering::Relaxed);
 
         loop {
-            if active == self.max_threads {
+            if self.active_count(counter) == self.max_threads {
                 return false;
             }
 
-            match self.active_threads.compare_exchange_weak(
-                active,
-                active + 1,
+            match self.counter.compare_exchange_weak(
+                counter,
+                counter + 1,
                 Ordering::SeqCst,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => return true,
-                Err(a) => active = a,
+                Err(a) => counter = a,
             }
         }
     }
 
     // return true if we should spawn new with this decrement.
-    pub(crate) fn dec_thread_count(&self) -> bool {
-        let count = self.active_threads.fetch_sub(1, Ordering::AcqRel);
+    pub(crate) fn dec_active_thread(&self) -> bool {
+        let counter = self.counter.fetch_sub(1, Ordering::AcqRel);
 
-        ((count - 1) < self.min_threads) && !self.jobs.is_closed()
+        let active = self.active_count(counter);
+
+        ((active - 1) < self.min_threads) && !self.jobs.is_closed()
     }
 
     // return true if we are able to drop the worker without going below min_idle.
     pub(crate) fn can_drop_idle(&self) -> bool {
-        self.active_threads.load(Ordering::Relaxed) > self.min_threads
+        let counter = self.counter.load(Ordering::Relaxed);
+
+        self.active_count(counter) > self.min_threads
     }
 
-    pub(crate) fn inc_work_count(&self) -> usize {
-        self.work_count.fetch_add(1, Ordering::Relaxed)
+    // We return 2 booleans:
+    // if we should spawn new thread.
+    // if we have parked threads.
+    pub(crate) fn inc_work_count(&self) -> (bool, bool) {
+        let counter = self.counter.fetch_add(self.one_work, Ordering::Relaxed);
+
+        // ToDo: this is likely not going to happen so it's left comment for now.
+        // assert!(count < (core::usize::MAX >> 1) / 2, "Too many work");
+
+        let active = self.active_count(counter);
+        let work = self.work_count(counter);
+        let have_parker = self.have_parker(counter);
+
+        (work > 0 && active < self.max_threads, have_parker)
     }
 
     fn dec_work_count(&self) {
-        self.work_count.fetch_sub(1, Ordering::Relaxed);
+        self.counter.fetch_sub(self.one_work, Ordering::Relaxed);
     }
 
-    pub(crate) fn have_park(&self) {
-        self.have_park.store(1, Ordering::Release);
+    pub(crate) fn set_park_marker(&self) {
+        self.counter.fetch_or(self.park_marker, Ordering::Release);
     }
 
     pub(crate) fn thread_count(&self) -> (usize, usize) {
-        let active = self.active_threads.load(Ordering::Relaxed);
+        let counter = self.counter.load(Ordering::Relaxed);
 
-        (active, self.max_threads)
+        (self.active_count(counter), self.max_threads)
     }
 
     pub(crate) fn new_parking(&self) -> ThreadParker {
@@ -167,12 +199,6 @@ impl ThreadPoolInner {
         false
     }
 
-    pub(crate) fn try_unpark_one(&self) {
-        if self.have_park.load(Ordering::Acquire) == 1 {
-            self.unpark_one();
-        }
-    }
-
     pub(crate) fn unpark_one(&self) {
         let mut guard = self.unparker.lock();
 
@@ -183,7 +209,7 @@ impl ThreadPoolInner {
         }
 
         // We have no parker in parking state.
-        self.have_park.store(0, Ordering::Release);
+        self.no_parker();
     }
 
     pub(crate) fn unpark_all(&self) {
@@ -193,6 +219,25 @@ impl ThreadPoolInner {
             unparker.try_unpark();
         }
 
-        self.have_park.store(0, Ordering::Release);
+        self.no_parker();
+    }
+}
+
+impl ThreadPoolInner {
+    fn active_count(&self, counter: usize) -> usize {
+        counter & (self.park_marker - 1)
+    }
+
+    fn work_count(&self, counter: usize) -> usize {
+        counter & !(self.park_marker - 1)
+    }
+
+    fn have_parker(&self, counter: usize) -> bool {
+        counter & self.park_marker != 0
+    }
+
+    fn no_parker(&self) {
+        let unpark_marker = !self.park_marker;
+        self.counter.fetch_and(unpark_marker, Ordering::Relaxed);
     }
 }

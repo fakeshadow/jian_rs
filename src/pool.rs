@@ -33,11 +33,14 @@ impl ThreadPool {
         // push job to queue.
         inner.push(Box::new(job))?;
 
-        if inner.inc_work_count() > 0 {
+        // read from the previous state when we increment work count
+        let (should_spawn, have_parker) = inner.inc_work_count();
+
+        if have_parker {
+            inner.unpark_one();
+        } else if should_spawn {
             self.spawn_thread();
         }
-
-        inner.try_unpark_one();
 
         Ok(())
     }
@@ -106,7 +109,7 @@ impl ThreadPool {
     fn spawn_thread(&self) -> bool {
         let inner = &*self.inner;
 
-        let did_inc = inner.inc_thread_count();
+        let did_inc = inner.inc_active_thread();
 
         if did_inc {
             let mut builder = thread::Builder::new();
@@ -122,7 +125,7 @@ impl ThreadPool {
             builder
                 .spawn(move || Worker::from(pool).handle_job())
                 .unwrap_or_else(|_| {
-                    inner.dec_thread_count();
+                    inner.dec_active_thread();
                     panic!("Failed to spawn new thread");
                 });
         }
@@ -157,7 +160,7 @@ impl Worker {
                             break;
                         };
 
-                        inner.have_park();
+                        inner.set_park_marker();
 
                         // park and wait for notify or timeout
                         if parker.park_timeout() {
@@ -200,7 +203,7 @@ impl Drop for Worker {
         let pool = &self.pool;
         let parker = &self.parker;
 
-        let should_spawn = pool.inner.remove_parking(parker).dec_thread_count();
+        let should_spawn = pool.inner.remove_parking(parker).dec_active_thread();
 
         if should_spawn {
             pool.spawn_thread();
