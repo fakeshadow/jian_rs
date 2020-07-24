@@ -129,7 +129,7 @@ impl ThreadPoolInner {
     }
 
     pub(crate) fn have_park(&self) {
-        self.have_park.fetch_or(1, Ordering::Release);
+        self.have_park.store(1, Ordering::Release);
     }
 
     pub(crate) fn thread_count(&self) -> (usize, usize) {
@@ -168,7 +168,7 @@ impl ThreadPoolInner {
     }
 
     pub(crate) fn try_unpark_one(&self) {
-        if self.have_park.load(Ordering::Acquire) != 0 {
+        if self.have_park.load(Ordering::Acquire) == 1 {
             self.unpark_one();
         }
     }

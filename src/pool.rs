@@ -34,10 +34,10 @@ impl ThreadPool {
         inner.push(Box::new(job))?;
 
         if inner.inc_work_count() > 0 {
-            if !self.spawn_thread() {
-                inner.try_unpark_one();
-            };
+            self.spawn_thread();
         }
+
+        inner.try_unpark_one();
 
         Ok(())
     }
@@ -57,8 +57,7 @@ impl ThreadPool {
         let (tx, rx) = futures_channel::oneshot::channel();
 
         self.execute(Box::new(move || {
-                let _ = tx.send(job());
-
+            let _ = tx.send(job());
         }))?;
 
         Ok(rx.await?)
@@ -169,10 +168,13 @@ impl Worker {
                                     job();
                                     // We got job again so continue the loop.
                                 }
-                                Err(_) => {
-                                    // check if we are about to go below min_idle
-                                    if inner.can_drop_idle() {
-                                        break;
+                                Err(e) => match e {
+                                    PopError::Closed => break,
+                                    PopError::Empty => {
+                                        // check if we are about to go below min_idle
+                                        if inner.can_drop_idle() {
+                                            break;
+                                        }
                                     }
                                 },
                             }
