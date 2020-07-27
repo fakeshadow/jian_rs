@@ -1,6 +1,6 @@
 use core::fmt::{Debug, Display, Formatter, Result};
 
-use concurrent_queue::PushError;
+use std::sync::mpsc::SendError;
 
 use crate::pool_inner::Job;
 
@@ -8,7 +8,6 @@ use crate::pool_inner::Job;
 pub enum ThreadPoolError {
     Canceled,
     Closed(Job),
-    Full(Job),
 }
 
 impl ThreadPoolError {
@@ -37,7 +36,6 @@ impl ThreadPoolError {
     pub fn into_inner(self) -> Option<Box<dyn FnOnce() + Send + 'static>> {
         match self {
             ThreadPoolError::Closed(job) => Some(job),
-            ThreadPoolError::Full(job) => Some(job),
             ThreadPoolError::Canceled => None,
         }
     }
@@ -50,12 +48,9 @@ impl From<futures_channel::oneshot::Canceled> for ThreadPoolError {
     }
 }
 
-impl From<PushError<Job>> for ThreadPoolError {
-    fn from(e: PushError<Job>) -> Self {
-        match e {
-            PushError::Closed(t) => ThreadPoolError::Closed(t),
-            PushError::Full(t) => ThreadPoolError::Full(t),
-        }
+impl From<SendError<Job>> for ThreadPoolError {
+    fn from(e: SendError<Job>) -> Self {
+        ThreadPoolError::Closed(e.0)
     }
 }
 
@@ -72,9 +67,6 @@ impl Debug for ThreadPoolError {
             ThreadPoolError::Canceled => fmt
                 .field("cause", &"Canceled")
                 .field("description", &"Future is canceled. This could be caused either by caller drop the future before it resolved or a thread panic when executing the future"),
-            ThreadPoolError::Full(_) => fmt
-                .field("cause", &"Full")
-                .field("description", &"ThreadPool is full"),
         };
 
         fmt.finish()

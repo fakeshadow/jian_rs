@@ -36,6 +36,5 @@ pub(crate) mod builder;
 pub(crate) mod error;
 pub(crate) mod pool;
 pub(crate) mod pool_inner;
-pub(crate) mod thread_parking;
 
 pub use crate::{builder::Builder, error::ThreadPoolError, pool::ThreadPool};

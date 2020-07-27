@@ -1,17 +1,17 @@
 use core::fmt::{Debug, Formatter, Result as FmtResult};
 
-use std::sync::Arc;
-use std::thread;
-
-use concurrent_queue::PopError;
+use std::sync::{
+    mpsc::{channel, RecvTimeoutError, Sender},
+    Arc,
+};
 
 use crate::builder::Builder;
-use crate::pool_inner::ThreadPoolInner;
-use crate::thread_parking::ThreadParker;
+use crate::pool_inner::{Job, ThreadPoolInner};
 use crate::ThreadPoolError;
 
 /// Abstraction of a thread pool for basic parallelism.
 pub struct ThreadPool {
+    tx: Sender<Job>,
     inner: Arc<ThreadPoolInner>,
 }
 
@@ -28,17 +28,13 @@ impl ThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        let inner = &*self.inner;
-
-        // push job to queue.
-        inner.push(Box::new(job))?;
+        // send job through channel.
+        self.tx.send(Box::new(job))?;
 
         // read from the previous state when we increment work count
-        let (should_spawn, have_parker) = inner.inc_work_count();
+        let should_spawn = self.inner.inc_work_count();
 
-        if have_parker {
-            inner.unpark_one();
-        } else if should_spawn {
+        if should_spawn {
             self.spawn_thread();
         }
 
@@ -67,12 +63,9 @@ impl ThreadPool {
     }
 
     /// Close the pool and return `true` if this call is successful
+    #[deprecated(note = "Due to code rework ThreadPool::close can not function properly for now")]
     pub fn close(&self) -> bool {
-        let did_close = self.inner.close();
-
-        self.inner.unpark_all();
-
-        did_close
+        false
     }
 
     /// Return a state of the pool.
@@ -90,9 +83,14 @@ impl ThreadPool {
 
 impl From<Builder> for ThreadPool {
     fn from(builder: Builder) -> Self {
-        let inner = Arc::new(builder.into());
+        let (tx, rx) = channel();
 
-        let pool = ThreadPool { inner };
+        let inner = ThreadPoolInner::new(builder, rx);
+
+        let pool = ThreadPool {
+            tx,
+            inner: Arc::new(inner),
+        };
 
         let min_idle = pool.inner.min_idle_count();
 
@@ -112,7 +110,7 @@ impl ThreadPool {
         let did_inc = inner.inc_active_thread();
 
         if did_inc {
-            let mut builder = thread::Builder::new();
+            let mut builder = std::thread::Builder::new();
             if let Some(name) = inner.name() {
                 builder = builder.name(format!("{}-worker", name));
             }
@@ -137,50 +135,22 @@ impl ThreadPool {
 // A worker of the pool.
 struct Worker {
     pool: ThreadPool,
-    parker: ThreadParker,
 }
 
 impl Worker {
     fn handle_job(self) {
         let inner = &*self.pool.inner;
-        let parker = &self.parker;
 
         loop {
-            match inner.pop() {
+            match inner.recv_timeout() {
                 Ok(job) => {
                     job();
                 }
                 Err(e) => match e {
-                    // We don't need a graceful shut down as the queue is already closed AND empty
-                    PopError::Closed => break,
-                    PopError::Empty => {
-                        // If we for some reason lost the unparker then we must exit before we
-                        // parking.
-                        if !inner.notify_parking(parker) {
+                    RecvTimeoutError::Disconnected => break,
+                    RecvTimeoutError::Timeout => {
+                        if inner.can_drop_idle() {
                             break;
-                        };
-
-                        inner.set_park_marker();
-
-                        // park and wait for notify or timeout
-                        if parker.park_timeout() {
-                            // We are unparking because of timeout. try to pop job one more time and
-                            // exit on error
-                            match inner.pop() {
-                                Ok(job) => {
-                                    job();
-                                    // We got job again so continue the loop.
-                                }
-                                Err(e) => match e {
-                                    PopError::Closed => break,
-                                    PopError::Empty => {
-                                        // check if we are about to go below min_idle
-                                        if inner.can_drop_idle() {
-                                            break;
-                                        }
-                                    }
-                                },
-                            }
                         }
                     }
                 },
@@ -191,19 +161,15 @@ impl Worker {
 
 impl From<ThreadPool> for Worker {
     fn from(pool: ThreadPool) -> Self {
-        // It's important we construct worker in newly spawned thread.
-        let parker = pool.inner.new_parking();
-
-        Worker { pool, parker }
+        Worker { pool }
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         let pool = &self.pool;
-        let parker = &self.parker;
 
-        let should_spawn = pool.inner.remove_parking(parker).dec_active_thread();
+        let should_spawn = pool.inner.dec_active_thread();
 
         if should_spawn {
             pool.spawn_thread();
@@ -215,6 +181,7 @@ impl Clone for ThreadPool {
     /// Cloning a pool will create a new instance to the pool.
     fn clone(&self) -> ThreadPool {
         ThreadPool {
+            tx: self.tx.clone(),
             inner: self.inner.clone(),
         }
     }
