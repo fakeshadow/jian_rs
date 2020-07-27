@@ -69,7 +69,9 @@ impl Builder {
     ///
     /// The thread would de spawn itself when it kept in idle state for this Duration
     ///
-    /// Default is 5 minutes
+    /// Default is 5 minutes.
+    ///
+    /// *. Pass Duration::from_secs(0) would bypass the timeout.
     pub fn idle_timeout(mut self, dur: Duration) -> Builder {
         self.idle_timeout = dur;
         self

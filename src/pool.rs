@@ -1,7 +1,7 @@
 use core::fmt::{Debug, Formatter, Result as FmtResult};
 
 use std::sync::{
-    mpsc::{channel, RecvTimeoutError, Sender},
+    mpsc::{channel, Sender},
     Arc,
 };
 
@@ -63,9 +63,8 @@ impl ThreadPool {
     }
 
     /// Close the pool and return `true` if this call is successful
-    #[deprecated(note = "Due to code rework ThreadPool::close can not function properly for now")]
     pub fn close(&self) -> bool {
-        false
+        self.inner.close()
     }
 
     /// Return a state of the pool.
@@ -142,17 +141,18 @@ impl Worker {
         let inner = &*self.pool.inner;
 
         loop {
-            match inner.recv_timeout() {
+            match inner.recv() {
                 Ok(job) => {
                     job();
                 }
                 Err(e) => match e {
-                    RecvTimeoutError::Disconnected => break,
-                    RecvTimeoutError::Timeout => {
+                    ThreadPoolError::Disconnect => break,
+                    ThreadPoolError::TimeOut => {
                         if inner.can_drop_idle() {
                             break;
                         }
                     }
+                    _ => unreachable!(),
                 },
             }
         }

@@ -1,11 +1,14 @@
 use core::fmt::{Debug, Display, Formatter, Result};
 
-use std::sync::mpsc::SendError;
+use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError};
 
 use crate::pool_inner::Job;
 
 /// An enum exposed pool internal error to public.
 pub enum ThreadPoolError {
+    TimeOut,
+    Disconnect,
+
     Canceled,
     Closed(Job),
 }
@@ -36,7 +39,7 @@ impl ThreadPoolError {
     pub fn into_inner(self) -> Option<Box<dyn FnOnce() + Send + 'static>> {
         match self {
             ThreadPoolError::Closed(job) => Some(job),
-            ThreadPoolError::Canceled => None,
+            _ => None,
         }
     }
 }
@@ -54,6 +57,21 @@ impl From<SendError<Job>> for ThreadPoolError {
     }
 }
 
+impl From<RecvError> for ThreadPoolError {
+    fn from(_e: RecvError) -> Self {
+        ThreadPoolError::Disconnect
+    }
+}
+
+impl From<RecvTimeoutError> for ThreadPoolError {
+    fn from(e: RecvTimeoutError) -> Self {
+        match e {
+            RecvTimeoutError::Disconnected => ThreadPoolError::Disconnect,
+            RecvTimeoutError::Timeout => ThreadPoolError::TimeOut,
+        }
+    }
+}
+
 impl std::error::Error for ThreadPoolError {}
 
 impl Debug for ThreadPoolError {
@@ -61,9 +79,15 @@ impl Debug for ThreadPoolError {
         let mut fmt = f.debug_struct("ThreadPoolError");
 
         match self {
+            ThreadPoolError::Disconnect => fmt
+                .field("cause", &"Disconnect")
+                .field("description", &"ThreadPool is closed(From receiver)"),
+            ThreadPoolError::TimeOut => fmt
+                .field("cause", &"TimeOut")
+                .field("description", &"Wait too long incoming message"),
             ThreadPoolError::Closed(_) => fmt
                 .field("cause", &"Closed")
-                .field("description", &"ThreadPool is closed"),
+                .field("description", &"ThreadPool is closed(From Sender)"),
             ThreadPoolError::Canceled => fmt
                 .field("cause", &"Canceled")
                 .field("description", &"Future is canceled. This could be caused either by caller drop the future before it resolved or a thread panic when executing the future"),
