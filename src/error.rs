@@ -8,7 +8,6 @@ use crate::pool_inner::Job;
 pub enum ThreadPoolError {
     TimeOut,
     Disconnect,
-
     Canceled,
     Closed(Job),
 }

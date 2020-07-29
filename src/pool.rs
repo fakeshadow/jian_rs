@@ -28,17 +28,26 @@ impl ThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        // send job through channel.
-        self.tx.send(Box::new(job))?;
+        let inner = &self.inner;
 
         // read from the previous state when we increment work count
-        let should_spawn = self.inner.inc_work_count();
+        let (is_closed, should_spawn) = inner.inc_work_count();
 
-        if should_spawn {
-            self.spawn_thread();
+        let job = Box::new(job);
+
+        if is_closed {
+            Err(ThreadPoolError::Closed(job))
+        // We don't need to dec work count as we don't send the job and/or spawn new thread.
+        } else {
+            // send job through channel.
+            self.tx.send(job)?;
+
+            if should_spawn {
+                inner.spawn_thread(inner);
+            }
+
+            Ok(())
         }
-
-        Ok(())
     }
 
     /// execute the function `job` asynchronously.
@@ -91,89 +100,15 @@ impl From<Builder> for ThreadPool {
             inner: Arc::new(inner),
         };
 
-        let min_idle = pool.inner.min_idle_count();
+        let inner = &pool.inner;
+
+        let min_idle = inner.min_idle_count();
 
         (0..min_idle).for_each(|_| {
-            pool.spawn_thread();
+            inner.spawn_thread(&inner);
         });
 
         pool
-    }
-}
-
-impl ThreadPool {
-    // spawn new thread and return true if we successfully did that.
-    fn spawn_thread(&self) -> bool {
-        let inner = &*self.inner;
-
-        let did_inc = inner.inc_active_thread();
-
-        if did_inc {
-            let mut builder = std::thread::Builder::new();
-            if let Some(name) = inner.name() {
-                builder = builder.name(format!("{}-worker", name));
-            }
-            if let Some(stack_size) = inner.stack_size() {
-                builder = builder.stack_size(stack_size);
-            }
-
-            let pool = self.clone();
-
-            builder
-                .spawn(move || Worker::from(pool).handle_job())
-                .unwrap_or_else(|_| {
-                    inner.dec_active_thread();
-                    panic!("Failed to spawn new thread");
-                });
-        }
-
-        did_inc
-    }
-}
-
-// A worker of the pool.
-struct Worker {
-    pool: ThreadPool,
-}
-
-impl Worker {
-    fn handle_job(self) {
-        let inner = &*self.pool.inner;
-
-        loop {
-            match inner.recv() {
-                Ok(job) => {
-                    job();
-                }
-                Err(e) => match e {
-                    ThreadPoolError::Disconnect => break,
-                    ThreadPoolError::TimeOut => {
-                        if inner.can_drop_idle() {
-                            break;
-                        }
-                    }
-                    _ => unreachable!(),
-                },
-            }
-        }
-    }
-}
-
-impl From<ThreadPool> for Worker {
-    fn from(pool: ThreadPool) -> Self {
-        Worker { pool }
-    }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        let pool = &self.pool;
-
-        let should_spawn = pool.inner.dec_active_thread();
-
-        if should_spawn {
-            pool.spawn_thread();
-        }
     }
 }
 

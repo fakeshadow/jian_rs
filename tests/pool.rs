@@ -122,9 +122,9 @@ fn recycle() {
         .idle_timeout(Duration::from_millis(300))
         .build();
 
-    (0..128).for_each(|_| {
+    (0..1024).for_each(|_| {
         let _ = pool.execute(|| {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_nanos(1));
         });
     });
 
