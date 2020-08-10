@@ -21,17 +21,10 @@
 //!
 //! let pool = ThreadPool::builder().build();
 //!
-//! let result: Result<(), ThreadPoolError> = pool.execute(|| {
+//! pool.execute(|| {
 //!     println!("some code");
 //! });
 //! ```
-//!
-//! # Features
-//! | Feature | Description | Extra dependencies | Default |
-//! | ------- | ----------- | ------------------ | ------- |
-//! | `default` | None | [num_cpus](https://crates.io/crates/num_cpus) | yes |
-//! | `with-async` | Enable await on execute result asynchronously. | [futures-channel](https://crates.io/crates/futures-channel) | no |
-
 #![forbid(unsafe_code)]
 
 pub(crate) mod builder;
