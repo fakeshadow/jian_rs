@@ -29,8 +29,10 @@
 //! # Features
 //! | Feature | Description | Extra dependencies | Default |
 //! | ------- | ----------- | ------------------ | ------- |
-//! | `default` | None | [cache-padded](https://crates.io/crates/cache-padded)<br>[concurrent-queue](https://crates.io/crates/concurrent-queue)<br>[num_cpus](https://crates.io/crates/num_cpus)<br>[parking](https://crates.io/crates/parking)<br>[parking_lot](https://crates.io/crates/parking_lot) | yes |
-//! | `with-async` | Enable await on execute result asynchronously. | [futures-channel](https://crates.io/crates/futures-channel) | yes |
+//! | `default` | None | [num_cpus](https://crates.io/crates/num_cpus) | yes |
+//! | `with-async` | Enable await on execute result asynchronously. | [futures-channel](https://crates.io/crates/futures-channel) | no |
+
+#![forbid(unsafe_code)]
 
 pub(crate) mod builder;
 pub(crate) mod error;

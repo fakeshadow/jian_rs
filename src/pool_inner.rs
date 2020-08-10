@@ -12,15 +12,11 @@ pub(crate) struct ThreadPoolInner {
     // a MPSC channel receiver for storing jobs.
     rx: Mutex<Receiver<Job>>,
 
-    // 3 counters packed in one usize. With the following bit flag:
-    // { work: 0, is_closed: 0, active_threads: 0 }
+    // 2 counters packed in one usize. With the following bit flag:
+    // { work: 0, active_threads: 0 }
     // active_threads would be in a range from 0 - max_threads.
-    // is_closed would either be 1(closed) or 0(not closed).
     // work_count would start from 0 and inc/dec with the job channel's send/recv
     counter: AtomicUsize,
-
-    // bitwise operator for closing the pool inner.
-    close_bit: usize,
 
     // one work unit.
     one_work: usize,
@@ -35,16 +31,9 @@ pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 
 impl ThreadPoolInner {
     pub(crate) fn new(builder: Builder, rx: Receiver<Job>) -> Self {
-        let max_threads = builder.max_threads.unwrap_or_else(num_cpus::get);
+        let max_threads = builder.max_threads.unwrap_or(8);
 
-        assert!(
-            max_threads < (core::usize::MAX >> 1) / 2,
-            "Too many threads"
-        );
-
-        // compute one_work unit and close bit.
-        let close_bit = (max_threads + 1).next_power_of_two();
-        let one_work = close_bit * 2;
+        let one_work = (max_threads + 1).next_power_of_two();
 
         let recv_timeout = if builder.idle_timeout == Duration::from_secs(0) {
             None
@@ -53,10 +42,9 @@ impl ThreadPoolInner {
         };
 
         ThreadPoolInner {
-            name: builder.thread_name,
+            name: builder.thread_name.map(|name| format!("{}-worker", name)),
             rx: Mutex::new(rx),
             counter: AtomicUsize::new(0),
-            close_bit,
             one_work,
             stack_size: builder.thread_stack_size,
             recv_timeout,
@@ -87,13 +75,13 @@ impl ThreadPoolInner {
         if did_inc {
             let mut builder = std::thread::Builder::new();
             if let Some(name) = self.name() {
-                builder = builder.name(format!("{}-worker", name));
+                builder = builder.name(name.into());
             }
             if let Some(stack_size) = self.stack_size() {
                 builder = builder.stack_size(stack_size);
             }
 
-            let worker = Worker::from(inner.clone());
+            let mut worker = Worker::from(inner.clone());
 
             builder.spawn(move || worker.handle_job()).unwrap();
         }
@@ -139,31 +127,26 @@ impl ThreadPoolInner {
         let counter = self.counter.fetch_sub(1, Ordering::SeqCst);
 
         let active = self.active_count(counter) - 1;
-        let is_open = self.is_open(counter);
 
-        (active < self.min_threads) && is_open
+        active < self.min_threads
     }
 
     // return true if we are able to drop the worker without going below min_idle.
     pub(crate) fn can_drop_idle(&self) -> bool {
         let counter = self.counter.load(Ordering::SeqCst);
-        let is_open = self.is_open(counter);
         let active = self.active_count(counter);
 
-        (active > self.min_threads) || !is_open
+        active > self.min_threads
     }
 
-    // We return two booleans:
-    // 1. if the pool inner is closed
-    // 2. if we should spawn new thread.
-    pub(crate) fn inc_work_count(&self) -> (bool, bool) {
+    // return if we should spawn new thread.
+    pub(crate) fn inc_work_count(&self) -> bool {
         let counter = self.counter.fetch_add(self.one_work, Ordering::Relaxed);
 
         let active = self.active_count(counter);
         let work = self.work_count(counter);
-        let is_open = self.is_open(counter);
 
-        (!is_open, work > 0 && active < self.max_threads)
+        work > 0 && active < self.max_threads
     }
 
     fn dec_work_count(&self) {
@@ -175,26 +158,15 @@ impl ThreadPoolInner {
 
         (self.active_count(counter), self.max_threads)
     }
-
-    // close the pool inner and return true if this call is a success.
-    pub(crate) fn close(&self) -> bool {
-        let counter = self.counter.fetch_or(self.close_bit, Ordering::SeqCst);
-
-        self.is_open(counter)
-    }
 }
 
 impl ThreadPoolInner {
     fn active_count(&self, counter: usize) -> usize {
-        counter & (self.close_bit - 1)
+        counter & (self.one_work - 1)
     }
 
     fn work_count(&self, counter: usize) -> usize {
         counter & !(self.one_work - 1)
-    }
-
-    fn is_open(&self, counter: usize) -> bool {
-        counter & self.close_bit == 0
     }
 }
 
@@ -202,7 +174,7 @@ impl ThreadPoolInner {
 struct Worker(Arc<ThreadPoolInner>);
 
 impl Worker {
-    fn handle_job(self) {
+    fn handle_job(&mut self) {
         loop {
             match self.0.recv() {
                 Ok(job) => {
@@ -213,9 +185,10 @@ impl Worker {
                     ThreadPoolError::TimeOut => {
                         if self.0.can_drop_idle() {
                             break;
+                        } else {
+                            std::thread::yield_now();
                         }
                     }
-                    _ => unreachable!(),
                 },
             }
         }

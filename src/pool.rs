@@ -7,7 +7,6 @@ use std::sync::{
 
 use crate::builder::Builder;
 use crate::pool_inner::{Job, ThreadPoolInner};
-use crate::ThreadPoolError;
 
 /// Abstraction of a thread pool for basic parallelism.
 pub struct ThreadPool {
@@ -24,56 +23,18 @@ impl ThreadPool {
     }
 
     /// Executes the function `job` on a thread in the pool.
-    pub fn execute<F>(&self, job: F) -> Result<(), ThreadPoolError>
+    pub fn execute<F>(&self, job: F)
     where
         F: FnOnce() + Send + 'static,
     {
         let inner = &self.inner;
 
+        self.tx.send(Box::new(job)).unwrap();
+
         // read from the previous state when we increment work count
-        let (is_closed, should_spawn) = inner.inc_work_count();
-
-        let job = Box::new(job);
-
-        if is_closed {
-            Err(ThreadPoolError::Closed(job))
-        // We don't need to dec work count as we don't send the job and/or spawn new thread.
-        } else {
-            // send job through channel.
-            self.tx.send(job)?;
-
-            if should_spawn {
-                inner.spawn_thread(inner);
-            }
-
-            Ok(())
+        if inner.inc_work_count() {
+            inner.spawn_thread(inner);
         }
-    }
-
-    /// execute the function `job` asynchronously.
-    ///
-    /// [`futures_channel::oneshot::channel`]is used to await on the result.
-    ///
-    /// [futures_channel::oneshot::channel]: https://docs.rs/futures-channel/0.3.5/futures_channel/oneshot/index.html
-    #[cfg(feature = "with-async")]
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub async fn execute_async<F, R>(&self, job: F) -> Result<R, ThreadPoolError>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let (tx, rx) = futures_channel::oneshot::channel();
-
-        self.execute(Box::new(move || {
-            let _ = tx.send(job());
-        }))?;
-
-        Ok(rx.await?)
-    }
-
-    /// Close the pool and return `true` if this call is successful
-    pub fn close(&self) -> bool {
-        self.inner.close()
     }
 
     /// Return a state of the pool.
